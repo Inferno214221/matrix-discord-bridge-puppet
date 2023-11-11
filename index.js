@@ -7,15 +7,8 @@ let go = false;
 
 //TODO: Log To Matrix Channel
 
-// mxClient.sendEvent("!QlvEnCpkoPSToaKbuZ:matrix.org", "m.room.message", {
-//     body: "test",
-//     msgtype: "m.text",
-// }, "", (err, res) => {
-//     console.log(err);
-// });
-
 const mxClient = sdk.createClient({
-    baseUrl: "https://matrix.org",
+    baseUrl: DATA.matrix.baseUrl,
     accessToken: DATA.matrix.accessToken,
     userId: DATA.matrix.userId,
 });
@@ -55,6 +48,8 @@ class ChannelBridge {
         this.discordServer = discord.server;
         this.discordChannel = discord.channel;
         this.discord = discord.server + "/" + discord.channel;
+        this.lastDiscordMsg = new Date().getTime();
+        this.matrixUsername = mxClient.getProfileInfo(DATA.matrix.userId, "displayname");
         this.initPage();
     }
     async initPage() {
@@ -67,6 +62,7 @@ class ChannelBridge {
 
         await this.page.goto("https://discord.com/channels/" + this.discord);
     }
+
     async getDiscordMessages() {
         let messages = await this.page.evaluate(() => {
             let messages = [];
@@ -82,11 +78,11 @@ class ChannelBridge {
                                 case "header__39b23":
                                     // console.log("Header", element);
                                     author = element.firstElementChild.innerText;
-                                    timestamp = new Date(element.firstElementChild.nextElementSibling.firstElementChild.dateTime);
+                                    timestamp = element.firstElementChild.nextElementSibling.firstElementChild.dateTime;
                                     break;
                                 case "latin24CompactTimeStamp__21614":
                                     // console.log("TimeStamp", element);
-                                    timestamp = new Date(element.firstElementChild.dateTime);
+                                    timestamp = element.firstElementChild.dateTime;
                                     break;
                                 case "messageContent__21e69":
                                     // console.log("Message", element);
@@ -104,9 +100,22 @@ class ChannelBridge {
             }
             return messages;
         });
-        console.log(messages);
-        //TODO: Send them
+        messages.sort((a, b) => new Date(a).getTime() - new Date(b).getTime()).forEach(async (message) => {
+            if (message[0] == DATA.discord.username) return;
+            if (new Date(message[1]).getTime() > this.lastDiscordMsg) {
+                if (this.matrixUsername != message[0]) {
+                    await mxClient.setDisplayName(message[0]);
+                    this.matrixUsername = message[0];
+                }
+                await mxClient.sendEvent(this.matrixRoom, "m.room.message", {
+                    msgtype: "m.text",
+                    body: message[2]
+                });
+                this.lastDiscordMsg = new Date(message[1]).getTime();
+            }
+        });
     }
+
     async handleMatrixMessage(message) {
         console.log(message);
         if (message.type == "m.room.message") {
@@ -128,13 +137,18 @@ Object.keys(BRIDGE).forEach((key) => {
     pageIndexByDiscord[newPage.discord] = index;
 });
 
-setTimeout(() => pages.forEach((page) => page.getDiscordMessages()), 60000);
-
 mxClient.on("Room.timeline", function (event, room, toStartOfTimeline) {
     if (!go) {
         return;
     }
-    if (event.event.unsigned.age < 6000 && event.event.sender != DATA.matrix.userId) {
+    if ((event.event.unsigned == undefined || event.event.unsigned.age < 6000) && event.event.sender != DATA.matrix.userId) {
         pages[pageIndexByMatrixRoom[event.event.room_id]].handleMatrixMessage(event.event);
     }
 });
+
+await new Promise(resolve => setTimeout(resolve, 30000));
+while (true) {
+    console.log("Here");
+    pages.forEach((page) => page.getDiscordMessages());
+    await new Promise(resolve => setTimeout(resolve, 3000));
+}
